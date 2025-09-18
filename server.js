@@ -10,9 +10,8 @@ app.use(
     changeOrigin: true,
     secure: false,
     cookieDomainRewrite: "",
-    selfHandleResponse: true, // allows modifying HTML
+    selfHandleResponse: true,
     onProxyRes: responseInterceptor(async (responseBuffer, proxyRes, req, res) => {
-      // Remove problematic headers
       delete proxyRes.headers["x-frame-options"];
       delete proxyRes.headers["content-security-policy"];
 
@@ -22,13 +21,13 @@ app.use(
       ) {
         let body = responseBuffer.toString("utf8");
 
-        // Remove CSP meta tags
+        // strip CSP <meta>
         body = body.replace(
           /<meta[^>]+http-equiv=["']Content-Security-Policy["'][^>]*>/gi,
           ""
         );
 
-        // (Optional) relax frame-ancestors inside CSP
+        // relax frame-ancestors
         body = body.replace(/frame-ancestors [^;]+;/gi, "frame-ancestors *;");
 
         return body;
@@ -40,7 +39,9 @@ app.use(
   })
 );
 
-const PORT = process.env.PORT || 10000; // Render uses $PORT (usually 10000)
+// Render sets this at runtime
+const PORT = process.env.PORT;
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Proxy running on port ${PORT}`);
 });
