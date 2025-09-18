@@ -1,5 +1,5 @@
 import express from "express";
-import { createProxyMiddleware } from "http-proxy-middleware";
+import { createProxyMiddleware, responseInterceptor } from "http-proxy-middleware";
 
 const app = express();
 
@@ -10,21 +10,33 @@ app.use(
     changeOrigin: true,
     secure: false,
     cookieDomainRewrite: "",
-    onProxyRes: (proxyRes, req, res) => {
-      // Remove frame-blocking headers
+    selfHandleResponse: true, // allows modifying HTML
+    onProxyRes: responseInterceptor(async (responseBuffer, proxyRes, req, res) => {
+      // Remove problematic headers
       delete proxyRes.headers["x-frame-options"];
       delete proxyRes.headers["content-security-policy"];
 
-      // Rewrite redirects to stay on proxy domain
-      if (proxyRes.headers["location"]) {
-        proxyRes.headers["location"] = proxyRes.headers["location"].replace(
-          /^https:\/\/desktop\.captions\.ai/,
-          ""
-        );
+      if (
+        proxyRes.headers["content-type"] &&
+        proxyRes.headers["content-type"].includes("text/html")
+      ) {
+        let body = responseBuffer.toString("utf8");
+
+        // Remove CSP meta tags
+        body = body.replace(/<meta[^>]+http-equiv=["']Content-Security-Policy["'][^>]*>/gi, "");
+
+        // (Optional) adjust frame-ancestors if injected inline
+        body = body.replace(/frame-ancestors [^;]+;/gi, "frame-ancestors *;");
+
+        return body;
       }
-    },
-    pathRewrite: (path) => {
-      return path === "/" ? "/projects" : path;
+
+      return responseBuffer;
+    }),
+    pathRewrite: (path) => (path === "/" ? "/projects" : path),
+    onProxyRes: (proxyRes) => {
+      delete proxyRes.headers["x-frame-options"];
+      delete proxyRes.headers["content-security-policy"];
     }
   })
 );
