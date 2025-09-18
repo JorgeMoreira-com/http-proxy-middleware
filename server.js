@@ -12,106 +12,59 @@ app.use((req, res, next) => {
   next();
 });
 
-function rewriteSetCookieArray(setCookieArray) {
-  return setCookieArray.map((cookie) => {
-    // remove Domain=... if present
-    cookie = cookie.replace(/;\s*Domain=[^;]+/i, "");
-
-    // Ensure SameSite=None
-    if (/;\s*SameSite=/i.test(cookie)) {
-      cookie = cookie.replace(/;\s*SameSite=(Lax|Strict)/i, "; SameSite=None");
-    } else {
-      cookie += "; SameSite=None";
-    }
-
-    // Ensure Secure
-    if (!/;\s*Secure/i.test(cookie)) cookie += "; Secure";
-
-    return cookie;
-  });
-}
-
+// 1. Normal proxy for all assets & APIs (streaming, websockets)
 app.use(
-  "/",
+  ["/static", "/api", "/sockjs-node", "/socket.io", "/assets"],
   createProxyMiddleware({
     target: PROXY_TARGET,
     changeOrigin: true,
+    ws: true,
     secure: false,
-    selfHandleResponse: true, // we will modify responses manually
-    onProxyRes: (proxyRes, req, res) => {
-      const chunks = [];
-      proxyRes.on("data", (chunk) => chunks.push(chunk));
+  })
+);
+
+// 2. Special proxy for root + HTML pages (scrub CSP, framebust, etc.)
+import { Buffer } from "buffer";
+function htmlProxy() {
+  return createProxyMiddleware({
+    target: PROXY_TARGET,
+    changeOrigin: true,
+    selfHandleResponse: true,
+    onProxyRes: async (proxyRes, req, res) => {
+      let body = Buffer.from([]);
+      proxyRes.on("data", (chunk) => {
+        body = Buffer.concat([body, chunk]);
+      });
       proxyRes.on("end", () => {
         try {
-          const bodyBuffer = Buffer.concat(chunks);
-          const contentType = (proxyRes.headers["content-type"] || "").toLowerCase();
+          let html = body.toString("utf8");
 
-          // 1) Rewrite Location redirects fully to proxy domain
-          if (proxyRes.headers.location) {
-            let loc = proxyRes.headers.location;
-            loc = loc.replace(new RegExp(`^${PROXY_TARGET}`), "");
-            if (!loc.startsWith("http")) {
-              loc = req.protocol + "://" + req.headers.host + loc;
-            }
-            proxyRes.headers.location = loc;
-          }
+          // strip CSP meta
+          html = html.replace(
+            /<meta[^>]*http-equiv=["']?Content-Security-Policy["']?[^>]*>/gi,
+            ""
+          );
 
-          // 2) Rewrite Set-Cookie headers
-          if (proxyRes.headers["set-cookie"]) {
-            const newCookies = rewriteSetCookieArray(proxyRes.headers["set-cookie"]);
-            res.setHeader("set-cookie", newCookies);
-          }
+          // strip obvious framebust scripts
+          html = html.replace(
+            /<script\b[^>]*>[\s\S]*?(?:top\.location|window\.top)[\s\S]*?<\/script>/gi,
+            "<!-- framebust removed -->"
+          );
 
-          // 3) Copy headers, strip problematic ones
-          Object.entries(proxyRes.headers).forEach(([name, value]) => {
-            const low = name.toLowerCase();
-            if (low === "content-length" || low === "content-encoding") return;
-            if (low === "x-frame-options" || low === "content-security-policy") return;
-            if (low === "set-cookie") return; // already handled
-            res.setHeader(name, value);
-          });
-
-          // 4) If HTML, scrub CSP meta tags and framebust scripts
-          if (contentType.includes("text/html")) {
-            let body = bodyBuffer.toString("utf8");
-
-            body = body.replace(
-              /<meta[^>]*http-equiv=["']?Content-Security-Policy["']?[^>]*>/gi,
-              ""
-            );
-
-            body = body.replace(
-              /<script\b[^>]*>[\s\S]*?(?:top\.location|window\.top|if\s*\(\s*top\s*!==\s*self|if\s*\(\s*self\.location\.hostname)[\s\S]*?<\/script>/gi,
-              "<!-- framebust removed -->"
-            );
-
-            body = body.replace(/top\.location/g, "/*top.location blocked*/");
-
-            body = body.replace(
-              /<head([^>]*)>/i,
-              `<head$1><script>/* injected to reduce framebust chances */ window.__frameProxy=true;</script>`
-            );
-
-            const outBuf = Buffer.from(body, "utf8");
-            res.setHeader("content-length", Buffer.byteLength(outBuf));
-            res.write(outBuf);
-            res.end();
-            return;
-          }
-
-          // 5) Non-HTML passthrough
-          res.write(bodyBuffer);
-          res.end();
+          res.setHeader("content-type", "text/html; charset=utf-8");
+          res.end(html);
         } catch (err) {
-          console.error("Proxy response handling error:", err);
-          res.statusCode = 500;
-          res.end("Proxy error");
+          console.error("HTML proxy error:", err);
+          res.status(500).end("Proxy error");
         }
       });
     },
     pathRewrite: (path) => (path === "/" ? "/projects" : path),
-  })
-);
+  });
+}
+app.use("/", htmlProxy());
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, "0.0.0.0", () => console.log("Proxy running on port", PORT));
+app.listen(PORT, "0.0.0.0", () =>
+  console.log(`Proxy running on http://0.0.0.0:${PORT}`)
+);
