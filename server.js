@@ -10,12 +10,15 @@ app.use(
     changeOrigin: true,
     secure: false,
     cookieDomainRewrite: "",
-    onProxyRes: (proxyRes, req, res) => {
-      // Remove frame-blocking headers
-      delete proxyRes.headers["x-frame-options"];
-      delete proxyRes.headers["content-security-policy"];
 
-      // Rewrite redirects to stay on proxy domain
+    onProxyRes: (proxyRes, req, res) => {
+      // Remove any frame-blocking headers
+      if (proxyRes.headers['x-frame-options']) delete proxyRes.headers['x-frame-options'];
+      if (proxyRes.headers['content-security-policy']) delete proxyRes.headers['content-security-policy'];
+      if (proxyRes.headers['x-content-security-policy']) delete proxyRes.headers['x-content-security-policy'];
+      if (proxyRes.headers['x-webkit-csp']) delete proxyRes.headers['x-webkit-csp'];
+
+      // Rewrite redirects to stay under proxy
       if (proxyRes.headers["location"]) {
         proxyRes.headers["location"] = proxyRes.headers["location"].replace(
           /^https:\/\/desktop\.captions\.ai/,
@@ -23,9 +26,8 @@ app.use(
         );
       }
     },
-    pathRewrite: (path) => {
-      return path === "/" ? "/projects" : path;
-    }
+
+    pathRewrite: (path) => (path === "/" ? "/projects" : path),
   })
 );
 
