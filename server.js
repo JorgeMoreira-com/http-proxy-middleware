@@ -5,6 +5,13 @@ import { createProxyMiddleware } from "http-proxy-middleware";
 const app = express();
 const PROXY_TARGET = "https://desktop.captions.ai";
 
+// Allow embedding in iframe
+app.use((req, res, next) => {
+  res.setHeader("X-Frame-Options", "ALLOWALL");
+  res.setHeader("Content-Security-Policy", "frame-ancestors *");
+  next();
+});
+
 function rewriteSetCookieArray(setCookieArray) {
   return setCookieArray.map((cookie) => {
     // remove Domain=... if present
@@ -32,7 +39,6 @@ app.use(
     secure: false,
     selfHandleResponse: true, // we will modify responses manually
     onProxyRes: (proxyRes, req, res) => {
-      // collect chunks
       const chunks = [];
       proxyRes.on("data", (chunk) => chunks.push(chunk));
       proxyRes.on("end", () => {
@@ -40,12 +46,14 @@ app.use(
           const bodyBuffer = Buffer.concat(chunks);
           const contentType = (proxyRes.headers["content-type"] || "").toLowerCase();
 
-          // 1) Rewrite Location redirects to keep them under the proxy path
+          // 1) Rewrite Location redirects fully to proxy domain
           if (proxyRes.headers.location) {
-            proxyRes.headers.location = proxyRes.headers.location.replace(
-              new RegExp(`^${PROXY_TARGET}`),
-              ""
-            );
+            let loc = proxyRes.headers.location;
+            loc = loc.replace(new RegExp(`^${PROXY_TARGET}`), "");
+            if (!loc.startsWith("http")) {
+              loc = req.protocol + "://" + req.headers.host + loc;
+            }
+            proxyRes.headers.location = loc;
           }
 
           // 2) Rewrite Set-Cookie headers
@@ -54,12 +62,12 @@ app.use(
             res.setHeader("set-cookie", newCookies);
           }
 
-          // 3) copy headers (except those we don't want)
+          // 3) Copy headers, strip problematic ones
           Object.entries(proxyRes.headers).forEach(([name, value]) => {
             const low = name.toLowerCase();
             if (low === "content-length" || low === "content-encoding") return;
             if (low === "x-frame-options" || low === "content-security-policy") return;
-            if (low === "set-cookie") return; // already set above
+            if (low === "set-cookie") return; // already handled
             res.setHeader(name, value);
           });
 
@@ -67,22 +75,18 @@ app.use(
           if (contentType.includes("text/html")) {
             let body = bodyBuffer.toString("utf8");
 
-            // remove inline CSP meta tags
             body = body.replace(
               /<meta[^>]*http-equiv=["']?Content-Security-Policy["']?[^>]*>/gi,
               ""
             );
 
-            // remove <script> blocks that look like frame busting (heuristic)
             body = body.replace(
               /<script\b[^>]*>[\s\S]*?(?:top\.location|window\.top|if\s*\(\s*top\s*!==\s*self|if\s*\(\s*self\.location\.hostname)[\s\S]*?<\/script>/gi,
               "<!-- framebust removed -->"
             );
 
-            // generic replacement for direct top.location references
             body = body.replace(/top\.location/g, "/*top.location blocked*/");
 
-            // inject a tiny marker script early in <head> to try to run before later scripts
             body = body.replace(
               /<head([^>]*)>/i,
               `<head$1><script>/* injected to reduce framebust chances */ window.__frameProxy=true;</script>`
@@ -95,7 +99,7 @@ app.use(
             return;
           }
 
-          // 5) non-HTML -> just forward bytes
+          // 5) Non-HTML passthrough
           res.write(bodyBuffer);
           res.end();
         } catch (err) {
@@ -109,7 +113,5 @@ app.use(
   })
 );
 
-const PORT = process.env.PORT || 3000;  // fallback only for local dev
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Proxy running on port ${PORT}`);
-});
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, "0.0.0.0", () => console.log("Proxy running on port", PORT));
