@@ -8,14 +8,22 @@ app.use(
   createProxyMiddleware({
     target: "https://desktop.captions.ai",
     changeOrigin: true,
-    secure: false, // allow proxying to HTTPS even if strict
-    cookieDomainRewrite: "", 
-    onProxyRes: (proxyRes) => {
+    secure: false,
+    cookieDomainRewrite: "",
+    onProxyRes: (proxyRes, req, res) => {
+      // Remove frame-blocking headers
       delete proxyRes.headers["x-frame-options"];
       delete proxyRes.headers["content-security-policy"];
+
+      // Rewrite redirects to stay on proxy domain
+      if (proxyRes.headers["location"]) {
+        proxyRes.headers["location"] = proxyRes.headers["location"].replace(
+          /^https:\/\/desktop\.captions\.ai/,
+          ""
+        );
+      }
     },
-    pathRewrite: (path, req) => {
-      // Default / → /projects
+    pathRewrite: (path) => {
       return path === "/" ? "/projects" : path;
     }
   })
