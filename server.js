@@ -23,9 +23,12 @@ app.use(
         let body = responseBuffer.toString("utf8");
 
         // Remove CSP meta tags
-        body = body.replace(/<meta[^>]+http-equiv=["']Content-Security-Policy["'][^>]*>/gi, "");
+        body = body.replace(
+          /<meta[^>]+http-equiv=["']Content-Security-Policy["'][^>]*>/gi,
+          ""
+        );
 
-        // (Optional) adjust frame-ancestors if injected inline
+        // (Optional) relax frame-ancestors inside CSP
         body = body.replace(/frame-ancestors [^;]+;/gi, "frame-ancestors *;");
 
         return body;
@@ -34,14 +37,10 @@ app.use(
       return responseBuffer;
     }),
     pathRewrite: (path) => (path === "/" ? "/projects" : path),
-    onProxyRes: (proxyRes) => {
-      delete proxyRes.headers["x-frame-options"];
-      delete proxyRes.headers["content-security-policy"];
-    }
   })
 );
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Proxy running on port ${PORT}`);
+const PORT = process.env.PORT || 10000; // Render uses $PORT (usually 10000)
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`✅ Proxy running on port ${PORT}`);
 });
