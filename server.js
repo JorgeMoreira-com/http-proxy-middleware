@@ -1,5 +1,6 @@
 import express from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
+import { Buffer } from "buffer";
 
 const app = express();
 
@@ -11,20 +12,44 @@ app.use(
     secure: false,
     cookieDomainRewrite: "",
 
-    onProxyRes: (proxyRes, req, res) => {
-      // Remove frame-blocking headers
-      if (proxyRes.headers['x-frame-options']) delete proxyRes.headers['x-frame-options'];
-      if (proxyRes.headers['content-security-policy']) delete proxyRes.headers['content-security-policy'];
-      if (proxyRes.headers['x-content-security-policy']) delete proxyRes.headers['x-content-security-policy'];
-      if (proxyRes.headers['x-webkit-csp']) delete proxyRes.headers['x-webkit-csp'];
+    selfHandleResponse: true, // allows us to modify the response
 
-      // Rewrite redirects to stay in proxy
-      if (proxyRes.headers["location"]) {
-        proxyRes.headers["location"] = proxyRes.headers["location"].replace(
-          /^https:\/\/desktop\.captions\.ai/,
-          ""
+    onProxyRes: async (proxyRes, req, res) => {
+      const chunks = [];
+
+      proxyRes.on("data", (chunk) => chunks.push(chunk));
+      proxyRes.on("end", () => {
+        const body = Buffer.concat(chunks);
+        let content = body.toString("utf8");
+
+        // Rewrite HTML meta CSP if present
+        content = content.replace(
+          /<meta http-equiv=["']Content-Security-Policy["'][^>]*>/gi,
+          '<meta http-equiv="Content-Security-Policy" content="default-src * \'unsafe-inline\' \'unsafe-eval\' data: blob:;">'
         );
-      }
+
+        // Set headers
+        Object.entries(proxyRes.headers).forEach(([key, value]) => {
+          if (
+            !["x-frame-options", "content-security-policy", "x-content-security-policy", "x-webkit-csp"].includes(
+              key.toLowerCase()
+            )
+          ) {
+            res.setHeader(key, value);
+          }
+        });
+
+        // Rewrite redirects to stay in proxy
+        if (proxyRes.headers["location"]) {
+          res.setHeader(
+            "location",
+            proxyRes.headers["location"].replace(/^https:\/\/desktop\.captions\.ai/, "")
+          );
+        }
+
+        res.status(proxyRes.statusCode);
+        res.send(content);
+      });
     },
 
     pathRewrite: (path) => (path === "/" ? "/projects" : path),
